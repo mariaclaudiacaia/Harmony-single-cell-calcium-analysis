@@ -1,0 +1,15 @@
+__pycache__/
+.eggs/
+*.egg-info/
+*.egg
+.DS_Store
+pip-log.txt
+pip-delete-this-directory.txt
+.pytest_cache/
+.ipynb_checkpoints
+.venv/
+env/
+venv/
+.idea/
+.vscode/
+.mypy_cache/
