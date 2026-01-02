@@ -409,7 +409,7 @@ def support_multiindex_signal_single_row_returns(
             [["cell_a", "cell_b"], [1, 2], [0, 1, 2]],
             names=["cell_id", "trial", "time"],
         )
-        s = pd.Series(np.random.randn(len(idx)), index=idx)
+        s = pd.Series(range(len(idx)), index=idx)
 
         # The result will be indexed by (cell_id, trial) only; the extra
         # innermost level created by groupby-apply is dropped.

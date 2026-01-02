@@ -33,7 +33,7 @@ def rolling_quantile(
         the labels at the right edge of the window. Defaults to True.
     min_periods : int or None, optional
         Minimum number of observations in the window required to have a
-        value. If None (default), it is set to ``window_size // 2``.
+        value. If None (default), it is set to ``window_size``.
 
     Returns
     -------
