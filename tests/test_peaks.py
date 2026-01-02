@@ -9,7 +9,6 @@ from calcium_analysis.peaks import (
     get_timeseries_per_spike_df,
     append_segment_bounds_using_relative_prominence,
 )
-from calcium_analysis.smoothing import rolling_gaussian_mean
 
 
 def get_mock_signal():
@@ -33,7 +32,7 @@ def _golden_paths(out_dir):
     return signal_xlsx, peaks_xlsx
 
 
-def test_find_peaks_positions_basic(rebase, tmp_path):
+def test_find_peaks_positions_basic(rebase):
     signal = get_mock_signal()
     peaks_df = get_peak_positions_and_properties(signal, min_delta_t=0.1)
     assert not peaks_df.empty
@@ -58,7 +57,6 @@ def test_find_peaks_positions_basic(rebase, tmp_path):
         npt.assert_allclose(
             golden_signal["value"].values, signal.values, rtol=1e-5, atol=1e-6
         )
-        golden_signal = golden_signal.set_index("time")
         golden_peaks = golden_peaks.set_index("peak_index")
 
         npt.assert_allclose(golden_peaks.values, peaks_df.values, rtol=1e-5, atol=1e-6)
