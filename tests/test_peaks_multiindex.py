@@ -37,7 +37,7 @@ def _golden_paths(out_dir):
     return signal_xlsx, peaks_xlsx
 
 
-def test_find_peaks_positions_basic(rebase, tmp_path):
+def test_find_peaks_positions_basic(rebase):
     signal1 = get_mock_signal()
     signal2 = get_mock_signal(spikes=[(3.0, 3.0, 0.3), (4.0, 7.0, 0.2)])
     signal = pd.concat(

@@ -9,9 +9,8 @@ from __future__ import annotations
 
 import functools
 import inspect
-from typing import Any, Iterable, Tuple
+from typing import Tuple
 
-import numpy as np
 import pandas as pd
 
 
@@ -30,11 +29,98 @@ def _as_tuple(key):
 def support_multiindex_signal(
     signal_arg: str = "signal", *, group_levels=None, time_name="time"
 ):
-    """Decorator for functions that accept a 1-D `signal: pd.Series`.
+    """Decorator to add MultiIndex grouping support to 1-D ``pd.Series`` signals.
 
-    If a MultiIndex Series is passed for `signal` the function is executed for
-    each group (all index levels except the last), and results are concatenated
-    with the group keys prefixed to the returned index.
+    This decorator is intended for functions that operate on a single
+    time-indexed trace, i.e. a 1-D ``pandas.Series`` whose index represents
+    time. When the decorated function is called with a plain ``Series`` (no
+    ``MultiIndex``), the original function is invoked unchanged. When the
+    ``signal`` argument is a ``Series`` with a ``MultiIndex`` index, the
+    decorator groups the series by one or more index levels, calls the wrapped
+    function once per group on the corresponding 1-D time series, and
+    concatenates the results while preserving the group keys in the index.
+
+    Grouping behavior
+    ------------------
+    The time dimension must be represented by an index level named
+    ``time_name`` (default: ``"time"``). All remaining levels are treated as
+    grouping dimensions. For each unique combination of those group levels, a
+    subgroup is extracted, reduced to a 1-D ``Series`` indexed only by the
+    ``time_name`` level, and passed to the wrapped function as the
+    ``signal_arg`` argument.
+
+    If ``group_levels`` is provided, its values are used as the group level
+    names instead of inferring them from all non-time index levels. In either
+    case, if the required time level is missing, a :class:`ValueError` is
+    raised to avoid ambiguous behavior.
+
+    Parameters
+    ----------
+    signal_arg : str, optional
+        Name of the keyword argument in the wrapped function that receives the
+        signal series. By default, ``"signal"``. The decorator will inspect the
+        call, extract this argument (from positional or keyword arguments), and
+        use it for MultiIndex handling.
+    group_levels : iterable of hashable, optional
+        Explicit names of the index levels to group by. If ``None`` (the
+        default), all index levels except the ``time_name`` level are used as
+        grouping levels. If provided, the names must correspond to existing
+        levels in the ``signal`` index.
+    time_name : hashable, optional
+        Name of the index level that represents time in the MultiIndex. The
+        series passed to the wrapped function will be reindexed to have only
+        this level. Defaults to ``"time"``.
+
+    Returns
+    -------
+    callable
+        A wrapped version of the original function. When called, it returns
+        either:
+
+        * The direct result of the original function if ``signal`` is not a
+          MultiIndex ``Series``.
+        * A ``DataFrame`` or other object resulting from applying the original
+          function to each group and concatenating the per-group outputs when
+          ``signal`` is a MultiIndex ``Series``. If the concatenated
+          DataFrame is empty, an empty ``DataFrame`` is returned.
+
+    Notes
+    -----
+    The decorator uses :meth:`pandas.Series.groupby` with the chosen group
+    levels and :meth:`pandas.core.groupby.GroupBy.apply` to call the wrapped
+    function on each subgroup. Pandas is responsible for attaching the group
+    keys to the resulting index during this operation.
+
+    Examples
+    --------
+    Basic usage with automatic grouping by all non-time levels::
+
+        import pandas as pd
+
+        @support_multiindex_signal()
+        def compute_mean(signal: pd.Series) -> float:
+            return signal.mean()
+
+        # MultiIndex: (cell_id, trial_id, time)
+        idx = pd.MultiIndex.from_product(
+            [["cellA", "cellB"], [1, 2], range(3)],
+            names=["cell", "trial", "time"],
+        )
+        signal = pd.Series(range(len(idx)), index=idx)
+
+        # The decorator will group by (cell, trial) and call compute_mean
+        # separately for each (cell, trial) combination.
+        result = compute_mean(signal=signal)
+
+    You can also specify explicit group levels, for example grouping only by
+    ``"cell"`` and treating ``"trial"`` as part of the time series if encoded
+    in the index or values::
+
+        @support_multiindex_signal(group_levels=["cell"])
+        def summarize_cell(signal: pd.Series):
+            ...
+
+        summary = summarize_cell(signal=signal)
     """
 
     def decorator(func):
@@ -104,13 +190,75 @@ def support_multiindex_peaks(
     peaks_arg: str = "peaks_df",
     other_df_args: Tuple[str, ...] = (),
 ):
-    """Decorator for functions accepting both `peaks_df` (grouped) and other dataframes.
+    """Decorator factory adding MultiIndex / grouped support for peak tables.
 
-    - If `peaks_df` is a MultiIndex DataFrame, iterate over group keys (all
-      levels, except for "peak_index"), calling the wrapped function for each group with group levels dropped
-    - For all other DataFrame arguments named in `other_df_args`, if they are
-      MultiIndex DataFrames, subset them to the same group key (dropping group
-      levels) before passing to the wrapped function
+    This decorator is intended for functions that operate on a single-group
+    ``peaks_df`` (a regular :class:`pandas.DataFrame` indexed by
+    ``"peak_index"`` only), but that may also be called with a MultiIndex
+    ``peaks_df`` where the outer index levels encode grouping variables
+    (e.g. ``cell_id``, ``trial``, etc.).
+
+    Behavior
+    --------
+    The returned decorator wraps a function that has a keyword argument named
+    ``peaks_arg`` (by default ``"peaks_df"``). When the wrapped function is
+    called:
+
+    * If the argument specified by ``peaks_arg`` is **not** a MultiIndex
+      DataFrame, the function is invoked once and the result is returned
+      unchanged.
+    * If the argument specified by ``peaks_arg`` **is** a MultiIndex
+      DataFrame, the code iterates over all group keys defined by the index
+      levels **except** the innermost ``"peak_index"`` level. For each group:
+
+      - The corresponding slice of ``peaks_df`` is passed to the wrapped
+        function with all grouping levels dropped from its index, leaving
+        only ``"peak_index"``.
+      - For every argument name listed in ``other_df_args``, if the
+        corresponding argument is a MultiIndex DataFrame, it is subset to the
+        same group key and its grouping levels are dropped before being passed
+        to the wrapped function.
+
+    The per-group results are then concatenated along the index. Any grouping
+    levels from the original ``peaks_df`` are re-attached as outer index
+    levels in the combined result so that group membership is preserved.
+
+    Parameters
+    ----------
+    peaks_arg:
+        Name of the keyword argument in the wrapped function that provides
+        the main peaks table (usually ``"peaks_df"``). This argument must be
+        a :class:`pandas.DataFrame`. If it has a MultiIndex, the outer levels
+        are interpreted as grouping levels and the last level is assumed to be
+        ``"peak_index"``.
+    other_df_args:
+        Tuple of argument names for any *other* DataFrame parameters of the
+        wrapped function that should be grouped in the same way as
+        ``peaks_arg``. For each name in this tuple, if the corresponding
+        argument is a MultiIndex DataFrame, it is sliced by the current group
+        key and its grouping index levels are dropped before being passed to
+        the wrapped function.
+
+    Returns
+    -------
+    callable
+        A decorator that can be applied to functions taking ``peaks_df`` and
+        (optionally) additional DataFrame arguments. The decorated function
+        accepts both grouped (MultiIndex) and ungrouped inputs.
+
+    Examples
+    --------
+    Basic usage with a single ``peaks_df`` argument::
+
+        @support_multiindex_peaks(peaks_arg="peaks_df")
+        def compute_peak_stats(peaks_df: pd.DataFrame) -> pd.DataFrame:
+            # expects peaks_df indexed only by "peak_index"
+            return peaks_df.agg({"amplitude": "mean", "width": "mean"})
+
+        # When peaks_df has a MultiIndex with (cell_id, peak_index),
+        # compute_peak_stats is run once per cell_id, and the results are
+        # concatenated with cell_id restored as an outer index level.
+        stats = compute_peak_stats(peaks_df=multiindex_peaks_df)
     """
 
     def decorator(func):
@@ -195,10 +343,77 @@ def support_multiindex_peaks(
 def support_multiindex_signal_single_row_returns(
     signal_arg: str = "signal", *, group_levels=None, time_name="time"
 ):
-    """Decorator for functions that accept a 1-D `signal: pd.Series` and return a single-row DataFrame.
+    """Decorator for functions that accept a 1-D ``signal: pd.Series`` and return a
+    single-row ``pd.DataFrame``.
 
-    Wraps `support_multiindex_signal` but drops the innermost index level (usually 0)
-    from the result, which `groupby.apply` adds when the applied function returns a DataFrame.
+    This decorator is a thin convenience wrapper around :func:`support_multiindex_signal`.
+    It enables functions that operate on a single 1-D trace (a plain ``pd.Series``)
+    and return a *single-row* DataFrame to be transparently applied to grouped or
+    MultiIndex signals (for example, signals indexed by ``(cell_id, trial, time)``).
+
+    When the wrapped function is applied group-wise via :meth:`pandas.Series.groupby.apply`,
+    pandas will add an extra innermost index level corresponding to the row index of the
+    returned DataFrame (typically ``0`` for a single-row result). This decorator removes
+    that redundant innermost level so that the resulting index only reflects the group
+    keys (and any existing index levels), making downstream operations and merges
+    simpler.
+
+    Parameters
+    ----------
+    signal_arg : str, optional
+        Name of the keyword argument in the wrapped function that receives the
+        signal. The signal is expected to be a 1-D ``pd.Series`` when called
+        directly, or a (potentially MultiIndex) ``pd.Series`` when used in a
+        grouped context. Defaults to ``"signal"``.
+    group_levels : iterable of hashable, optional
+        Names or integer positions of the index levels to treat as grouping
+        levels when the input ``signal`` has a MultiIndex. If ``None``, all
+        non-time levels are used as group levels (see
+        :func:`support_multiindex_signal` for the exact behavior).
+    time_name : hashable, optional
+        Name of the index level that represents time. This is used by
+        :func:`support_multiindex_signal` to distinguish time from grouping
+        levels. Defaults to ``"time"``.
+
+    Returns
+    -------
+    Callable
+        A decorator that can be applied to a function ``f(signal: pd.Series, ...)``
+        which returns a single-row ``pd.DataFrame``. The resulting wrapped
+        function will:
+
+        * Behave identically to ``f`` when passed a non-MultiIndex ``pd.Series``.
+        * When given a MultiIndex ``pd.Series``, apply ``f`` per group and
+          concatenate the per-group results into a single DataFrame with the
+          redundant innermost index level removed.
+
+    Examples
+    --------
+    Basic usage with a simple 1-D signal::
+
+        @support_multiindex_signal_single_row_returns()
+        def summarize_trace(signal: pd.Series) -> pd.DataFrame:
+            return pd.DataFrame(
+                {
+                    "mean": [signal.mean()],
+                    "std": [signal.std()],
+                }
+            )
+
+        s = pd.Series([1.0, 2.0, 3.0], index=pd.Index([0, 1, 2], name="time"))
+        summary = summarize_trace(signal=s)
+
+    Usage with a MultiIndex signal grouped by ``cell_id`` and ``trial``::
+
+        idx = pd.MultiIndex.from_product(
+            [["cell_a", "cell_b"], [1, 2], [0, 1, 2]],
+            names=["cell_id", "trial", "time"],
+        )
+        s = pd.Series(range(len(idx)), index=idx)
+
+        # The result will be indexed by (cell_id, trial) only; the extra
+        # innermost level created by groupby-apply is dropped.
+        summary_by_group = summarize_trace(signal=s)
     """
 
     def decorator(func):

@@ -1,5 +1,4 @@
 import os
-import numpy as np
 import pandas as pd
 import numpy.testing as npt
 import pytest
@@ -12,7 +11,7 @@ def _golden_paths(out_dir):
     return fit_xlsx
 
 
-def test_fit_per_spike_regression(rebase, tmp_path):
+def test_fit_per_spike_regression(rebase):
     out_dir = os.path.join("test_data", "peaks")
 
     fit_xlsx = _golden_paths(out_dir)

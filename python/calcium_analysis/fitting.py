@@ -2,7 +2,6 @@ import numpy as np
 import pandas as pd
 from typing import Tuple
 
-from calcium_analysis.helpers import check_time_index
 from calcium_analysis.multiindex_decorators import (
     support_multiindex_signal_single_row_returns,
 )
