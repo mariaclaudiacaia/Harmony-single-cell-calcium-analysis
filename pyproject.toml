@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61","wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "calcium_analysis"
+version = "0.1.0"
+description = "Tools for calcium signal analysis"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "scipy",
+    "pandas",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+]
+
+[tool.setuptools.packages.find]
+where = ["python"]
+include = ["calcium_analysis*"]
+
+[project.scripts]
+calcium-analysis = "calcium_analysis.__main__:main"
