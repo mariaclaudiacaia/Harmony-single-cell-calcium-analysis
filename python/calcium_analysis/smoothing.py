@@ -54,18 +54,17 @@ def rolling_quantile(
 
 @support_multiindex_signal(signal_arg="y")
 def rolling_gaussian_mean(
-    y: pd.Series | pd.DataFrame,
+    y: pd.Series,
     kernel_width=5,
     kernel_sigma=2,
 ) -> pd.Series:
     """
-    Apply a centered Gaussian-weighted rolling mean to a time series or DataFrame.
+    Apply a centered Gaussian-weighted rolling mean to a time series.
 
     Parameters
     ----------
-    y : pandas.Series or pandas.DataFrame
-        Input signal to be smoothed. Can be a Series or a DataFrame; the
-        rolling operation is applied independently to each column.
+    y : pandas.Series
+        Input signal to be smoothed.
     kernel_width : int, optional
         Size of the rolling window, in samples. This is passed as the
         ``window`` argument to :meth:`pandas.Series.rolling`. Defaults to 5.
