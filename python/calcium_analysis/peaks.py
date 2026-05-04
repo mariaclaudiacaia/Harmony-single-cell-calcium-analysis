@@ -16,6 +16,8 @@ def get_peak_positions_and_properties(
     height_z_score_threshold: float = 3.0,
     prominence_threshold_over_sigma: float = 2.0,
     min_delta_t: float = 0.5,
+    absolute_height_threshold: float | None = None,
+    absolute_prominence_threshold: float | None = None,
     rel_prominences_for_widths: list[float] = [0.5, 0.75],
 ) -> pd.DataFrame:
     """
@@ -49,6 +51,14 @@ def get_peak_positions_and_properties(
         time units as the index of `y` (typically seconds). This is converted
         to a minimum distance in samples and passed to
         :func:`scipy.signal.find_peaks`. Default is 0.5.
+    absolute_height_threshold : float or None, optional
+        Absolute minimum height a peak must reach on ``y`` to be considered.
+        When provided, the effective height cutoff is the larger of the
+        MAD-based threshold and this absolute threshold. Default is None.
+    absolute_prominence_threshold : float or None, optional
+        Absolute minimum prominence a peak must have on ``y`` to be considered.
+        When provided, the effective prominence cutoff is the larger of the
+        MAD-based threshold and this absolute threshold. Default is None.
     rel_prominences_for_widths : list of float, optional
         Relative prominence levels (between 0 and 1) at which peak widths are
         computed. For each value ``r`` in this list, additional columns such as
@@ -78,6 +88,8 @@ def get_peak_positions_and_properties(
         height_z_score_threshold=height_z_score_threshold,
         prominence_threshold_over_sigma=prominence_threshold_over_sigma,
         min_delta_t=min_delta_t,
+        absolute_height_threshold=absolute_height_threshold,
+        absolute_prominence_threshold=absolute_prominence_threshold,
     )
 
     if peaks_df.empty:
@@ -94,6 +106,8 @@ def find_peaks_positions(
     height_z_score_threshold: float = 3.0,
     prominence_threshold_over_sigma: float = 2.0,
     min_delta_t: float = 0.5,
+    absolute_height_threshold: float | None = None,
+    absolute_prominence_threshold: float | None = None,
 ) -> pd.DataFrame:
     """
     Detect peak positions and basic peak properties in a 1D time series.
@@ -119,6 +133,15 @@ def find_peaks_positions(
         Minimum allowed time between neighboring peaks, in seconds. This is
         converted internally to a minimum index distance based on the sampling
         interval of ``y``.
+    absolute_height_threshold : float or None, optional
+        Absolute minimum height a peak must reach on ``y`` to be considered.
+        If provided, the effective height cutoff becomes
+        ``max(mad_based_height_threshold, absolute_height_threshold)``.
+    absolute_prominence_threshold : float or None, optional
+        Absolute minimum prominence a peak must have on ``y`` to be considered.
+        If provided, the effective prominence cutoff becomes
+        ``max(mad_based_prominence_threshold, absolute_prominence_threshold)``.
+
     Returns
     -------
     pandas.DataFrame
@@ -147,6 +170,13 @@ def find_peaks_positions(
     min_peak_distance_idx = int(np.ceil(min_delta_t / dt))
     height_threshold = g_med + height_z_score_threshold * g_sigma
     prominence_threshold = prominence_threshold_over_sigma * g_sigma
+
+    if absolute_height_threshold is not None:
+        height_threshold = max(height_threshold, absolute_height_threshold)
+    if absolute_prominence_threshold is not None:
+        prominence_threshold = max(
+            prominence_threshold, absolute_prominence_threshold
+        )
 
     peaks, properties = find_peaks(
         v,
