@@ -119,7 +119,6 @@ def find_peaks_positions(
         Minimum allowed time between neighboring peaks, in seconds. This is
         converted internally to a minimum index distance based on the sampling
         interval of ``y``.
-
     Returns
     -------
     pandas.DataFrame

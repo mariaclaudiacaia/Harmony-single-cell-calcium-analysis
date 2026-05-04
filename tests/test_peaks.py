@@ -62,6 +62,32 @@ def test_find_peaks_positions_basic(rebase):
         npt.assert_allclose(golden_peaks.values, peaks_df.values, rtol=1e-5, atol=1e-6)
 
 
+def test_absolute_height_threshold_filters_small_peaks():
+    t = np.arange(11, dtype=float)
+    signal = pd.Series(
+        [0.0, 0.0, 0.03, 0.04, 0.03, 0.0, 0.0, 0.05, 0.08, 0.05, 0.0],
+        index=pd.Index(t, name="time"),
+        name="value",
+    )
+
+    peaks_df = get_peak_positions_and_properties(
+        signal,
+        height_z_score_threshold=0.0,
+        prominence_threshold_over_sigma=0.0,
+        min_delta_t=0.1,
+    )
+    assert peaks_df["peak_centers_idx"].tolist() == [3, 8]
+
+    filtered_peaks_df = get_peak_positions_and_properties(
+        signal,
+        height_z_score_threshold=0.0,
+        prominence_threshold_over_sigma=0.0,
+        min_delta_t=0.1,
+        absolute_height_threshold=0.05,
+    )
+    assert filtered_peaks_df["peak_centers_idx"].tolist() == [8]
+
+
 def test_get_timeseries_per_spike_df_minimal():
     # simple signal and two spike segments
     times = np.array([0.0, 1.0, 2.0, 3.0, 4.0])

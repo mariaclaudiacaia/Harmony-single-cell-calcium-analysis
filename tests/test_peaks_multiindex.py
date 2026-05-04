@@ -90,6 +90,40 @@ def test_find_peaks_positions_basic(rebase):
         npt.assert_allclose(golden_peaks.values, peaks_df.values, rtol=1e-5, atol=1e-6)
 
 
+def test_absolute_height_threshold_filters_small_peaks_multiindex():
+    t = np.arange(11, dtype=float)
+    signal_a = pd.Series(
+        [0.0, 0.0, 0.03, 0.04, 0.03, 0.0, 0.0, 0.05, 0.08, 0.05, 0.0],
+        index=pd.Index(t, name="time"),
+        name="value",
+    )
+    signal_b = pd.Series(
+        [0.0, 0.0, 0.06, 0.09, 0.06, 0.0, 0.0, 0.07, 0.11, 0.07, 0.0],
+        index=pd.Index(t, name="time"),
+        name="value",
+    )
+    signal = pd.concat(
+        [
+            signal_a.to_frame().assign(Trace="A").set_index("Trace", append=True),
+            signal_b.to_frame().assign(Trace="B").set_index("Trace", append=True),
+        ]
+    ).iloc[:, 0]
+    signal.index.names = ["time", "Trace"]
+
+    filtered_peaks_df = get_peak_positions_and_properties(
+        signal,
+        height_z_score_threshold=0.0,
+        prominence_threshold_over_sigma=0.0,
+        min_delta_t=0.1,
+        absolute_height_threshold=0.05,
+    )
+
+    peaks_a = filtered_peaks_df.xs("A", level="Trace")["peak_centers_idx"].tolist()
+    peaks_b = filtered_peaks_df.xs("B", level="Trace")["peak_centers_idx"].tolist()
+    assert peaks_a == [8]
+    assert peaks_b == [3, 8]
+
+
 def test_get_timeseries_per_spike_df_golden(rebase):
     out_dir = os.path.join("test_data", "peaks")
     signal_xlsx, peaks_xlsx = _golden_paths(out_dir)
