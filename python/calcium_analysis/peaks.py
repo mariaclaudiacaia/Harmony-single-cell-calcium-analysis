@@ -612,3 +612,125 @@ def get_timeseries_per_spike_df(
     spike_data_df = spike_data_df.set_index(["peak_index", "time_from_peak"])
 
     return spike_data_df
+
+
+def split_nested_peak_segments(
+    peaks_df: pd.DataFrame,
+    signal: pd.Series,
+    inplace: bool = False,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Split segment bounds when one detected peak sits inside another peak segment.
+
+    This is intended as a post-processing step after segment bounds have already
+    been created, for example by
+    :func:`append_segment_bounds_using_relative_prominence`.
+
+    Peaks are processed independently inside each trace/object. For each pair of
+    neighboring peaks sorted by ``peak_centers_idx``, if the second peak center
+    falls inside the first peak segment and the second peak's segment starts
+    inside that first segment:
+
+    * the first peak's ``segment_end_idx`` is moved to the second peak's
+      ``segment_start_idx``;
+    * the second peak's ``segment_end_idx`` becomes the later of its original
+      end and the first peak's original end.
+
+    Parameters
+    ----------
+    peaks_df:
+        Peak table with ``peak_centers_idx``, ``segment_start_idx`` and
+        ``segment_end_idx`` columns. The index may be a simple ``peak_index`` or
+        a MultiIndex with grouping levels plus ``peak_index``.
+    signal:
+        Signal used to compute the peak segments. It is only used to recompute
+        ``segment_truncated`` when that column is present.
+    inplace:
+        If True, edit ``peaks_df`` directly. If False, return a corrected copy
+        and leave ``peaks_df`` unchanged.
+
+    Returns
+    -------
+    tuple[pandas.DataFrame, pandas.DataFrame]
+        ``(corrected_peaks_df, adjustments_df)``. The adjustments table records
+        which nested peak pairs were changed and the old/new segment end
+        indices.
+    """
+    if peaks_df.empty:
+        return (peaks_df if inplace else peaks_df.copy()), pd.DataFrame()
+
+    corrected = peaks_df if inplace else peaks_df.copy()
+    required_columns = {"peak_centers_idx", "segment_start_idx", "segment_end_idx"}
+    missing_columns = required_columns - set(corrected.columns)
+    if missing_columns:
+        raise KeyError(f"Missing required columns: {sorted(missing_columns)}")
+
+    group_levels = [name for name in corrected.index.names if name != "peak_index"]
+    if group_levels:
+        grouped_peaks = corrected.groupby(level=group_levels, sort=False)
+    else:
+        grouped_peaks = [((), corrected)]
+
+    adjustments = []
+    for group_key, group in grouped_peaks:
+        group = group.sort_values("peak_centers_idx")
+        for current_idx, next_idx in zip(group.index[:-1], group.index[1:]):
+            current_start = int(corrected.loc[current_idx, "segment_start_idx"])
+            current_end = int(corrected.loc[current_idx, "segment_end_idx"])
+            next_start = int(corrected.loc[next_idx, "segment_start_idx"])
+            next_end = int(corrected.loc[next_idx, "segment_end_idx"])
+            next_center = int(corrected.loc[next_idx, "peak_centers_idx"])
+
+            if (
+                current_start <= next_center <= current_end
+                and current_start < next_start < current_end
+            ):
+                corrected.loc[current_idx, "segment_end_idx"] = next_start
+                corrected.loc[next_idx, "segment_end_idx"] = max(next_end, current_end)
+                adjustments.append(
+                    {
+                        "containing_peak": current_idx,
+                        "nested_peak": next_idx,
+                        "containing_peak_old_end_idx": current_end,
+                        "containing_peak_new_end_idx": next_start,
+                        "nested_peak_old_end_idx": next_end,
+                        "nested_peak_new_end_idx": max(next_end, current_end),
+                    }
+                )
+
+    if "segment_truncated" in corrected.columns:
+        if group_levels:
+            if not isinstance(signal.index, pd.MultiIndex):
+                raise ValueError(
+                    "signal must have a MultiIndex when peaks_df has grouped "
+                    "MultiIndex levels."
+                )
+
+            signal_names = list(signal.index.names)
+            missing_signal_levels = [
+                level for level in group_levels if level not in signal_names
+            ]
+            if missing_signal_levels:
+                raise ValueError(
+                    "signal is missing grouped index levels needed to recompute "
+                    f"segment_truncated: {missing_signal_levels}"
+                )
+
+            for group_key, group in corrected.groupby(level=group_levels, sort=False):
+                group_key = group_key if isinstance(group_key, tuple) else (group_key,)
+                n_timepoints = len(
+                    signal.xs(group_key, level=group_levels, drop_level=True)
+                )
+                corrected.loc[group.index, "segment_truncated"] = (
+                    (corrected.loc[group.index, "segment_start_idx"].astype(int) == 0)
+                    | (
+                        corrected.loc[group.index, "segment_end_idx"].astype(int)
+                        == n_timepoints - 1
+                    )
+                ).values
+        else:
+            corrected["segment_truncated"] = (
+                corrected["segment_start_idx"].astype(int) == 0
+            ) | (corrected["segment_end_idx"].astype(int) == len(signal) - 1)
+
+    return corrected, pd.DataFrame(adjustments)

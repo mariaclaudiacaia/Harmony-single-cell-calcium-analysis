@@ -8,6 +8,7 @@ from calcium_analysis.peaks import (
     get_peak_positions_and_properties,
     get_timeseries_per_spike_df,
     append_segment_bounds_using_relative_prominence,
+    split_nested_peak_segments,
 )
 
 
@@ -341,3 +342,62 @@ def test_append_segment_bounds_local_minima_matches_reference():
         npt.assert_array_equal(
             vec["segment_truncated"].values, ref["segment_truncated"].values
         )
+
+
+def test_split_nested_peak_segments_multiindex():
+    peaks_df = pd.DataFrame(
+        {
+            "peak_centers_idx": [40, 70, 130],
+            "segment_start_idx": [8, 62, 120],
+            "segment_end_idx": [99, 85, 145],
+            "segment_truncated": [False, False, False],
+        },
+        index=pd.MultiIndex.from_tuples(
+            [
+                (2, 6, 18, 0),
+                (2, 6, 18, 1),
+                (2, 6, 18, 2),
+            ],
+            names=["Row", "Column", "Object ID", "peak_index"],
+        ),
+    )
+    signal = pd.Series(
+        np.zeros(160),
+        index=pd.MultiIndex.from_product(
+            [[2], [6], [18], np.arange(160)],
+            names=["Row", "Column", "Object ID", "time"],
+        ),
+    )
+
+    corrected, adjustments = split_nested_peak_segments(peaks_df, signal)
+
+    assert corrected.loc[(2, 6, 18, 0), "segment_end_idx"] == 62
+    assert corrected.loc[(2, 6, 18, 1), "segment_end_idx"] == 99
+    assert corrected.loc[(2, 6, 18, 2), "segment_end_idx"] == 145
+    assert corrected["segment_truncated"].tolist() == [False, False, False]
+    assert adjustments.shape[0] == 1
+    assert adjustments.loc[0, "containing_peak_old_end_idx"] == 99
+    assert adjustments.loc[0, "containing_peak_new_end_idx"] == 62
+    assert adjustments.loc[0, "nested_peak_old_end_idx"] == 85
+    assert adjustments.loc[0, "nested_peak_new_end_idx"] == 99
+
+
+def test_split_nested_peak_segments_inplace_edits_input():
+    peaks_df = pd.DataFrame(
+        {
+            "peak_centers_idx": [40, 70],
+            "segment_start_idx": [8, 62],
+            "segment_end_idx": [99, 85],
+        },
+        index=pd.Index([0, 1], name="peak_index"),
+    )
+    signal = pd.Series(np.zeros(120))
+
+    corrected, adjustments = split_nested_peak_segments(
+        peaks_df, signal, inplace=True
+    )
+
+    assert corrected is peaks_df
+    assert peaks_df.loc[0, "segment_end_idx"] == 62
+    assert peaks_df.loc[1, "segment_end_idx"] == 99
+    assert adjustments.shape[0] == 1
