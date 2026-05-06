@@ -11,6 +11,147 @@ from calcium_analysis.multiindex_decorators import (
 GAUSSIAN_SIGMA_OVER_MEDIAN_ABS_DEVIATIONS = 1.4826
 
 
+def _as_tuple(key):
+    if isinstance(key, tuple):
+        return key
+    return (key,)
+
+
+def _normalize_group_levels(group_levels) -> list[str]:
+    if isinstance(group_levels, str):
+        return [group_levels]
+    return list(group_levels)
+
+
+def _robust_sigma_from_mad(values: np.ndarray) -> float:
+    g_med = np.median(values)
+    g_mad = np.median(np.abs(values - g_med))
+    return g_mad * GAUSSIAN_SIGMA_OVER_MEDIAN_ABS_DEVIATIONS
+
+
+def _find_peaks_positions_1d(
+    y: pd.Series,
+    height_z_score_threshold: float = 3.0,
+    prominence_threshold_over_sigma: float = 2.0,
+    min_delta_t: float = 0.5,
+    absolute_height_threshold: float | None = None,
+    absolute_prominence_threshold: float | None = None,
+    robust_sigma: float | None = None,
+) -> pd.DataFrame:
+    check_time_index(y)
+
+    v = y.values
+    times = y.index.values
+
+    dt = times[1] - times[0]
+
+    g_med = np.median(v)
+    g_sigma = _robust_sigma_from_mad(v) if robust_sigma is None else robust_sigma
+
+    min_peak_distance_idx = int(np.ceil(min_delta_t / dt))
+    height_threshold = g_med + height_z_score_threshold * g_sigma
+    prominence_threshold = prominence_threshold_over_sigma * g_sigma
+
+    if absolute_height_threshold is not None:
+        height_threshold = max(height_threshold, absolute_height_threshold)
+    if absolute_prominence_threshold is not None:
+        prominence_threshold = max(prominence_threshold, absolute_prominence_threshold)
+
+    peaks, properties = find_peaks(
+        v,
+        height=height_threshold,
+        prominence=prominence_threshold,
+        distance=min_peak_distance_idx,
+    )
+
+    # add time and index of peaks
+    properties["peak_centers_seconds"] = times[peaks]
+    properties["peak_centers_idx"] = peaks
+
+    df = pd.DataFrame(properties)
+    df.index.name = "peak_index"
+
+    return df
+
+
+def _mad_group_sigmas(
+    y: pd.Series,
+    mad_group_levels,
+    time_name: str = "time",
+) -> tuple[list[str], dict[tuple, float]]:
+    if not isinstance(y.index, pd.MultiIndex):
+        raise ValueError("mad_group_levels requires a MultiIndex signal.")
+
+    mad_group_levels = _normalize_group_levels(mad_group_levels)
+    if time_name in mad_group_levels:
+        raise ValueError(
+            f"mad_group_levels should identify replicate groups, not '{time_name}'."
+        )
+
+    names = list(y.index.names)
+    missing = [level for level in mad_group_levels if level not in names]
+    if missing:
+        raise ValueError(f"mad_group_levels not found in signal index: {missing}")
+
+    sigmas = {}
+    for key, grp in y.groupby(level=mad_group_levels, sort=False):
+        sigmas[_as_tuple(key)] = _robust_sigma_from_mad(grp.values)
+
+    return mad_group_levels, sigmas
+
+
+def _find_peaks_positions_with_grouped_mad(
+    y: pd.Series,
+    mad_group_levels,
+    height_z_score_threshold: float = 3.0,
+    prominence_threshold_over_sigma: float = 2.0,
+    min_delta_t: float = 0.5,
+    absolute_height_threshold: float | None = None,
+    absolute_prominence_threshold: float | None = None,
+    time_name: str = "time",
+) -> pd.DataFrame:
+    if not isinstance(y.index, pd.MultiIndex):
+        raise ValueError("mad_group_levels requires a MultiIndex signal.")
+
+    names = list(y.index.names)
+    if time_name not in names:
+        raise ValueError(
+            f"MultiIndex signal must have a level named '{time_name}'. "
+            "Do not rely on automatic inference; rename your index levels."
+        )
+
+    signal_group_levels = [name for name in names if name != time_name]
+    mad_group_levels, sigmas = _mad_group_sigmas(
+        y, mad_group_levels=mad_group_levels, time_name=time_name
+    )
+
+    pieces = []
+    keys = []
+    for signal_key, grp in y.groupby(level=signal_group_levels, sort=False):
+        signal_key = _as_tuple(signal_key)
+        key_by_name = dict(zip(signal_group_levels, signal_key))
+        mad_key = tuple(key_by_name[level] for level in mad_group_levels)
+
+        ts = grp.droplevel(signal_group_levels)
+        peaks_df = _find_peaks_positions_1d(
+            ts,
+            height_z_score_threshold=height_z_score_threshold,
+            prominence_threshold_over_sigma=prominence_threshold_over_sigma,
+            min_delta_t=min_delta_t,
+            absolute_height_threshold=absolute_height_threshold,
+            absolute_prominence_threshold=absolute_prominence_threshold,
+            robust_sigma=sigmas[mad_key],
+        )
+        if not peaks_df.empty:
+            pieces.append(peaks_df)
+            keys.append(signal_key if len(signal_group_levels) > 1 else signal_key[0])
+
+    if not pieces:
+        return pd.DataFrame()
+
+    return pd.concat(pieces, keys=keys, names=signal_group_levels)
+
+
 def get_peak_positions_and_properties(
     y: pd.Series,
     height_z_score_threshold: float = 3.0,
@@ -19,6 +160,7 @@ def get_peak_positions_and_properties(
     absolute_height_threshold: float | None = None,
     absolute_prominence_threshold: float | None = None,
     rel_prominences_for_widths: list[float] = [0.5, 0.75],
+    mad_group_levels=None,
 ) -> pd.DataFrame:
     """
     Detect peak positions in a one-dimensional calcium (or similar) signal and
@@ -66,6 +208,13 @@ def get_peak_positions_and_properties(
         ``width_{int(r*100)}_end_idx``, ``width_{int(r*100)}_start_time`` and
         ``width_{int(r*100)}_end_time`` are added to the output. By default,
         widths are computed at 50 % and 75 % of the peak prominence.
+    mad_group_levels : str, list of str, or None, optional
+        MultiIndex level(s) used to calculate a shared MAD-based sigma for peak
+        thresholds. Peak detection is still run per trace/object, but each trace
+        receives the sigma calculated from all signal values in its MAD group.
+        For well-level MAD in data indexed by ``Row``, ``Column``, ``Object ID``,
+        and ``time``, pass ``["Row", "Column"]``. If None, MAD is calculated
+        independently for each trace/object.
 
     Returns
     -------
@@ -83,14 +232,25 @@ def get_peak_positions_and_properties(
         `rel_prominences_for_widths`. If no peaks are detected, an empty
         DataFrame is returned.
     """
-    peaks_df = find_peaks_positions(
-        y,
-        height_z_score_threshold=height_z_score_threshold,
-        prominence_threshold_over_sigma=prominence_threshold_over_sigma,
-        min_delta_t=min_delta_t,
-        absolute_height_threshold=absolute_height_threshold,
-        absolute_prominence_threshold=absolute_prominence_threshold,
-    )
+    if mad_group_levels is None:
+        peaks_df = find_peaks_positions(
+            y,
+            height_z_score_threshold=height_z_score_threshold,
+            prominence_threshold_over_sigma=prominence_threshold_over_sigma,
+            min_delta_t=min_delta_t,
+            absolute_height_threshold=absolute_height_threshold,
+            absolute_prominence_threshold=absolute_prominence_threshold,
+        )
+    else:
+        peaks_df = _find_peaks_positions_with_grouped_mad(
+            y,
+            mad_group_levels=mad_group_levels,
+            height_z_score_threshold=height_z_score_threshold,
+            prominence_threshold_over_sigma=prominence_threshold_over_sigma,
+            min_delta_t=min_delta_t,
+            absolute_height_threshold=absolute_height_threshold,
+            absolute_prominence_threshold=absolute_prominence_threshold,
+        )
 
     if peaks_df.empty:
         return peaks_df
@@ -156,43 +316,14 @@ def find_peaks_positions(
         integer identifier for each peak.
     """
 
-    check_time_index(y)
-
-    v = y.values
-    times = y.index.values
-
-    dt = times[1] - times[0]
-
-    g_med = np.median(v)
-    g_mad = np.median(np.abs(v - g_med))
-    g_sigma = g_mad * GAUSSIAN_SIGMA_OVER_MEDIAN_ABS_DEVIATIONS
-
-    min_peak_distance_idx = int(np.ceil(min_delta_t / dt))
-    height_threshold = g_med + height_z_score_threshold * g_sigma
-    prominence_threshold = prominence_threshold_over_sigma * g_sigma
-
-    if absolute_height_threshold is not None:
-        height_threshold = max(height_threshold, absolute_height_threshold)
-    if absolute_prominence_threshold is not None:
-        prominence_threshold = max(
-            prominence_threshold, absolute_prominence_threshold
-        )
-
-    peaks, properties = find_peaks(
-        v,
-        height=height_threshold,
-        prominence=prominence_threshold,
-        distance=min_peak_distance_idx,
+    return _find_peaks_positions_1d(
+        y,
+        height_z_score_threshold=height_z_score_threshold,
+        prominence_threshold_over_sigma=prominence_threshold_over_sigma,
+        min_delta_t=min_delta_t,
+        absolute_height_threshold=absolute_height_threshold,
+        absolute_prominence_threshold=absolute_prominence_threshold,
     )
-
-    # add time and index of peaks
-    properties["peak_centers_seconds"] = times[peaks]
-    properties["peak_centers_idx"] = peaks
-
-    df = pd.DataFrame(properties)
-    df.index.name = "peak_index"
-
-    return df
 
 
 @support_multiindex_peaks_signal(peaks_arg="peaks_df", other_df_args=("y",))

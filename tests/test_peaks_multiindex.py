@@ -124,6 +124,66 @@ def test_absolute_height_threshold_filters_small_peaks_multiindex():
     assert peaks_b == [3, 8]
 
 
+def test_well_mad_group_levels_apply_shared_mad_to_each_object():
+    t = np.arange(11, dtype=float)
+    noisy_object = pd.Series(
+        [-1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0],
+        index=pd.MultiIndex.from_product(
+            [["A"], [1], ["noisy"], t],
+            names=["Row", "Column", "Object ID", "time"],
+        ),
+        name="value",
+    )
+    quiet_object = pd.Series(
+        [0.0, 0.0, 0.0, 0.0, 0.0, 2.5, 0.0, 0.0, 0.0, 0.0, 0.0],
+        index=pd.MultiIndex.from_product(
+            [["A"], [1], ["quiet"], t],
+            names=["Row", "Column", "Object ID", "time"],
+        ),
+        name="value",
+    )
+    signal = pd.concat([noisy_object, quiet_object])
+
+    per_object_peaks = get_peak_positions_and_properties(
+        signal,
+        height_z_score_threshold=0.0,
+        prominence_threshold_over_sigma=2.0,
+        min_delta_t=0.1,
+        absolute_height_threshold=2.0,
+    )
+    assert per_object_peaks.xs("quiet", level="Object ID")[
+        "peak_centers_idx"
+    ].tolist() == [5]
+
+    well_mad_peaks = get_peak_positions_and_properties(
+        signal,
+        height_z_score_threshold=0.0,
+        prominence_threshold_over_sigma=2.0,
+        min_delta_t=0.1,
+        absolute_height_threshold=2.0,
+        mad_group_levels=["Row", "Column"],
+    )
+    assert well_mad_peaks.empty
+
+    relaxed_well_mad_peaks = get_peak_positions_and_properties(
+        signal,
+        height_z_score_threshold=0.0,
+        prominence_threshold_over_sigma=1.0,
+        min_delta_t=0.1,
+        absolute_height_threshold=2.0,
+        mad_group_levels=["Row", "Column"],
+    )
+    assert relaxed_well_mad_peaks.index.names == [
+        "Row",
+        "Column",
+        "Object ID",
+        "peak_index",
+    ]
+    assert relaxed_well_mad_peaks.xs("quiet", level="Object ID")[
+        "peak_centers_idx"
+    ].tolist() == [5]
+
+
 def test_get_timeseries_per_spike_df_golden(rebase):
     out_dir = os.path.join("test_data", "peaks")
     signal_xlsx, peaks_xlsx = _golden_paths(out_dir)
