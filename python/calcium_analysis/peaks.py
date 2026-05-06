@@ -627,14 +627,24 @@ def split_nested_peak_segments(
     :func:`append_segment_bounds_using_relative_prominence`.
 
     Peaks are processed independently inside each trace/object. For each pair of
-    neighboring peaks sorted by ``peak_centers_idx``, if the second peak center
-    falls inside the first peak segment and the second peak's segment starts
-    inside that first segment:
+    neighboring peaks sorted by ``peak_centers_idx``, two nested-segment cases
+    are corrected.
+
+    If the second peak center falls inside the first peak segment and the second
+    peak's segment starts inside that first segment:
 
     * the first peak's ``segment_end_idx`` is moved to the second peak's
       ``segment_start_idx``;
     * the second peak's ``segment_end_idx`` becomes the later of its original
       end and the first peak's original end.
+
+    If the first peak center falls inside the second peak segment and the second
+    peak's segment starts before the first peak ends:
+
+    * the second peak's ``segment_start_idx`` is moved to the first peak's
+      ``segment_end_idx``;
+    * the first peak's ``segment_start_idx`` becomes the earlier of its original
+      start and the second peak's original start.
 
     Parameters
     ----------
@@ -653,7 +663,7 @@ def split_nested_peak_segments(
     -------
     tuple[pandas.DataFrame, pandas.DataFrame]
         ``(corrected_peaks_df, adjustments_df)``. The adjustments table records
-        which nested peak pairs were changed and the old/new segment end
+        which nested peak pairs were changed and the old/new segment boundary
         indices.
     """
     if peaks_df.empty:
@@ -691,10 +701,45 @@ def split_nested_peak_segments(
                     {
                         "containing_peak": current_idx,
                         "nested_peak": next_idx,
+                        "adjustment_type": "earlier_peak_contains_later_peak",
+                        "containing_peak_old_start_idx": current_start,
+                        "containing_peak_new_start_idx": current_start,
                         "containing_peak_old_end_idx": current_end,
                         "containing_peak_new_end_idx": next_start,
+                        "nested_peak_old_start_idx": next_start,
+                        "nested_peak_new_start_idx": next_start,
                         "nested_peak_old_end_idx": next_end,
                         "nested_peak_new_end_idx": max(next_end, current_end),
+                    }
+                )
+
+            current_start = int(corrected.loc[current_idx, "segment_start_idx"])
+            current_end = int(corrected.loc[current_idx, "segment_end_idx"])
+            next_start = int(corrected.loc[next_idx, "segment_start_idx"])
+            next_end = int(corrected.loc[next_idx, "segment_end_idx"])
+            current_center = int(corrected.loc[current_idx, "peak_centers_idx"])
+
+            if (
+                next_start <= current_center <= next_end
+                and next_start < current_end < next_end
+            ):
+                corrected.loc[current_idx, "segment_start_idx"] = min(
+                    current_start, next_start
+                )
+                corrected.loc[next_idx, "segment_start_idx"] = current_end
+                adjustments.append(
+                    {
+                        "containing_peak": next_idx,
+                        "nested_peak": current_idx,
+                        "adjustment_type": "later_peak_contains_earlier_peak",
+                        "containing_peak_old_start_idx": next_start,
+                        "containing_peak_new_start_idx": current_end,
+                        "containing_peak_old_end_idx": next_end,
+                        "containing_peak_new_end_idx": next_end,
+                        "nested_peak_old_start_idx": current_start,
+                        "nested_peak_new_start_idx": min(current_start, next_start),
+                        "nested_peak_old_end_idx": current_end,
+                        "nested_peak_new_end_idx": current_end,
                     }
                 )
 

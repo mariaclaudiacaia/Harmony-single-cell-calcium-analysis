@@ -401,3 +401,42 @@ def test_split_nested_peak_segments_inplace_edits_input():
     assert peaks_df.loc[0, "segment_end_idx"] == 62
     assert peaks_df.loc[1, "segment_end_idx"] == 99
     assert adjustments.shape[0] == 1
+
+
+def test_split_nested_peak_segments_later_wide_peak_edits_starts():
+    peaks_df = pd.DataFrame(
+        {
+            "peak_centers_idx": [140, 149],
+            "segment_start_idx": [134, 122],
+            "segment_end_idx": [146, 185],
+            "segment_truncated": [False, False],
+        },
+        index=pd.MultiIndex.from_tuples(
+            [
+                (2, 6, 77, 0),
+                (2, 6, 77, 1),
+            ],
+            names=["Row", "Column", "Object ID", "peak_index"],
+        ),
+    )
+    signal = pd.Series(
+        np.zeros(220),
+        index=pd.MultiIndex.from_product(
+            [[2], [6], [77], np.arange(220)],
+            names=["Row", "Column", "Object ID", "time"],
+        ),
+    )
+
+    corrected, adjustments = split_nested_peak_segments(peaks_df, signal)
+
+    assert corrected.loc[(2, 6, 77, 0), "segment_start_idx"] == 122
+    assert corrected.loc[(2, 6, 77, 0), "segment_end_idx"] == 146
+    assert corrected.loc[(2, 6, 77, 1), "segment_start_idx"] == 146
+    assert corrected.loc[(2, 6, 77, 1), "segment_end_idx"] == 185
+    assert corrected["segment_truncated"].tolist() == [False, False]
+    assert adjustments.shape[0] == 1
+    assert adjustments.loc[0, "adjustment_type"] == "later_peak_contains_earlier_peak"
+    assert adjustments.loc[0, "containing_peak_old_start_idx"] == 122
+    assert adjustments.loc[0, "containing_peak_new_start_idx"] == 146
+    assert adjustments.loc[0, "nested_peak_old_start_idx"] == 134
+    assert adjustments.loc[0, "nested_peak_new_start_idx"] == 122
