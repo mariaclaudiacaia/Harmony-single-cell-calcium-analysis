@@ -29,6 +29,28 @@ def _robust_sigma_from_mad(values: np.ndarray) -> float:
     return g_mad * GAUSSIAN_SIGMA_OVER_MEDIAN_ABS_DEVIATIONS
 
 
+def _validate_mad_sigma(mad_sigma: float) -> float:
+    mad_sigma = float(mad_sigma)
+    if not np.isfinite(mad_sigma) or mad_sigma < 0:
+        raise ValueError("mad_sigma must be a finite, non-negative number.")
+    return mad_sigma
+
+
+def calculate_mad_sigma(y: pd.Series) -> float:
+    """
+    Calculate the MAD-based robust sigma used by peak detection.
+
+    This returns ``median(abs(values - median(values))) * 1.4826``, matching the
+    noise estimate used internally for peak height and prominence thresholds.
+    Use it when a baseline recording should define the MAD threshold for a later
+    treatment recording.
+    """
+    if len(y) == 0:
+        raise ValueError("Cannot calculate MAD sigma from an empty signal.")
+
+    return _validate_mad_sigma(_robust_sigma_from_mad(y.values))
+
+
 def _find_peaks_positions_1d(
     y: pd.Series,
     height_z_score_threshold: float = 3.0,
@@ -152,6 +174,63 @@ def _find_peaks_positions_with_grouped_mad(
     return pd.concat(pieces, keys=keys, names=signal_group_levels)
 
 
+def _find_peaks_positions_with_fixed_mad(
+    y: pd.Series,
+    mad_sigma: float,
+    height_z_score_threshold: float = 3.0,
+    prominence_threshold_over_sigma: float = 2.0,
+    min_delta_t: float = 0.5,
+    absolute_height_threshold: float | None = None,
+    absolute_prominence_threshold: float | None = None,
+    time_name: str = "time",
+) -> pd.DataFrame:
+    mad_sigma = _validate_mad_sigma(mad_sigma)
+
+    if not isinstance(y.index, pd.MultiIndex):
+        return _find_peaks_positions_1d(
+            y,
+            height_z_score_threshold=height_z_score_threshold,
+            prominence_threshold_over_sigma=prominence_threshold_over_sigma,
+            min_delta_t=min_delta_t,
+            absolute_height_threshold=absolute_height_threshold,
+            absolute_prominence_threshold=absolute_prominence_threshold,
+            robust_sigma=mad_sigma,
+        )
+
+    names = list(y.index.names)
+    if time_name not in names:
+        raise ValueError(
+            f"MultiIndex signal must have a level named '{time_name}'. "
+            "Do not rely on automatic inference; rename your index levels."
+        )
+
+    signal_group_levels = [name for name in names if name != time_name]
+
+    pieces = []
+    keys = []
+    for signal_key, grp in y.groupby(level=signal_group_levels, sort=False):
+        signal_key = _as_tuple(signal_key)
+
+        ts = grp.droplevel(signal_group_levels)
+        peaks_df = _find_peaks_positions_1d(
+            ts,
+            height_z_score_threshold=height_z_score_threshold,
+            prominence_threshold_over_sigma=prominence_threshold_over_sigma,
+            min_delta_t=min_delta_t,
+            absolute_height_threshold=absolute_height_threshold,
+            absolute_prominence_threshold=absolute_prominence_threshold,
+            robust_sigma=mad_sigma,
+        )
+        if not peaks_df.empty:
+            pieces.append(peaks_df)
+            keys.append(signal_key if len(signal_group_levels) > 1 else signal_key[0])
+
+    if not pieces:
+        return pd.DataFrame()
+
+    return pd.concat(pieces, keys=keys, names=signal_group_levels)
+
+
 def get_peak_positions_and_properties(
     y: pd.Series,
     height_z_score_threshold: float = 3.0,
@@ -161,6 +240,7 @@ def get_peak_positions_and_properties(
     absolute_prominence_threshold: float | None = None,
     rel_prominences_for_widths: list[float] = [0.5, 0.75],
     mad_group_levels=None,
+    mad_sigma: float | None = None,
 ) -> pd.DataFrame:
     """
     Detect peak positions in a one-dimensional calcium (or similar) signal and
@@ -215,6 +295,12 @@ def get_peak_positions_and_properties(
         For well-level MAD in data indexed by ``Row``, ``Column``, ``Object ID``,
         and ``time``, pass ``["Row", "Column"]``. If None, MAD is calculated
         independently for each trace/object.
+    mad_sigma : float or None, optional
+        Fixed MAD-based sigma to use for all traces/objects. This should be the
+        value returned by :func:`calculate_mad_sigma`, for example from an
+        initial baseline recording that should define thresholds for later
+        treatment recordings. When provided, do not also provide
+        ``mad_group_levels``.
 
     Returns
     -------
@@ -232,7 +318,19 @@ def get_peak_positions_and_properties(
         `rel_prominences_for_widths`. If no peaks are detected, an empty
         DataFrame is returned.
     """
-    if mad_group_levels is None:
+    if mad_sigma is not None:
+        if mad_group_levels is not None:
+            raise ValueError("mad_sigma cannot be combined with mad_group_levels.")
+        peaks_df = _find_peaks_positions_with_fixed_mad(
+            y,
+            mad_sigma=mad_sigma,
+            height_z_score_threshold=height_z_score_threshold,
+            prominence_threshold_over_sigma=prominence_threshold_over_sigma,
+            min_delta_t=min_delta_t,
+            absolute_height_threshold=absolute_height_threshold,
+            absolute_prominence_threshold=absolute_prominence_threshold,
+        )
+    elif mad_group_levels is None:
         peaks_df = find_peaks_positions(
             y,
             height_z_score_threshold=height_z_score_threshold,

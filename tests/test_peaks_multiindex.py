@@ -5,6 +5,7 @@ import numpy.testing as npt
 import pytest
 
 from calcium_analysis.peaks import (
+    calculate_mad_sigma,
     get_peak_positions_and_properties,
     get_timeseries_per_spike_df,
     append_segment_bounds_using_relative_prominence,
@@ -183,6 +184,57 @@ def test_well_mad_group_levels_apply_shared_mad_to_each_object():
     assert relaxed_well_mad_peaks.xs("quiet", level="Object ID")[
         "peak_centers_idx"
     ].tolist() == [5]
+
+
+def test_baseline_mad_sigma_can_be_reused_for_treatment_signal():
+    t = np.arange(11, dtype=float)
+    baseline_signal = pd.Series(
+        [-1.0, 1.0, -1.0, 1.0, -1.0, 1.0, 0.0, -1.0, 1.0, -1.0, 1.0],
+        index=pd.MultiIndex.from_product(
+            [["A"], [1], ["baseline"], t],
+            names=["Row", "Column", "Object ID", "time"],
+        ),
+        name="value",
+    )
+    treatment_signal = pd.Series(
+        [0.0, 0.0, 0.0, 0.0, 0.0, 2.5, 0.0, 0.0, 0.0, 0.0, 0.0],
+        index=pd.MultiIndex.from_product(
+            [["A"], [2], ["treatment"], t],
+            names=["Row", "Column", "Object ID", "time"],
+        ),
+        name="value",
+    )
+
+    per_trace_peaks = get_peak_positions_and_properties(
+        treatment_signal,
+        height_z_score_threshold=0.0,
+        prominence_threshold_over_sigma=2.0,
+        min_delta_t=0.1,
+        absolute_height_threshold=2.0,
+    )
+    assert per_trace_peaks["peak_centers_idx"].tolist() == [5]
+
+    baseline_mad_sigma = calculate_mad_sigma(baseline_signal)
+    reference_mad_peaks = get_peak_positions_and_properties(
+        treatment_signal,
+        height_z_score_threshold=0.0,
+        prominence_threshold_over_sigma=2.0,
+        min_delta_t=0.1,
+        absolute_height_threshold=2.0,
+        mad_sigma=baseline_mad_sigma,
+    )
+    assert reference_mad_peaks.empty
+
+
+def test_mad_sigma_cannot_be_combined_with_mad_group_levels():
+    signal = get_mock_signal()
+
+    with pytest.raises(ValueError, match="mad_sigma cannot be combined"):
+        get_peak_positions_and_properties(
+            signal,
+            mad_group_levels=["Trace"],
+            mad_sigma=1.0,
+        )
 
 
 def test_get_timeseries_per_spike_df_golden(rebase):
